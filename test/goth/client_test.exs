@@ -11,11 +11,12 @@ defmodule Goth.ClientTest do
     {:ok, bypass: bypass}
   end
 
-  test "we include all necessary attributes in the JWT" do
+  test "we include all necessary attributes in the JWT without sub" do
     {:ok, email} = Goth.Config.get(:client_email)
     iat = :os.system_time(:seconds)
     exp = iat+10
     scope = "prediction"
+    sub = nil
 
     assert %{
       "iss"   => ^email,
@@ -23,15 +24,37 @@ defmodule Goth.ClientTest do
       "aud"   => "https://www.googleapis.com/oauth2/v4/token",
       "iat"   => ^iat,
       "exp"   =>   ^exp
-    } = Client.claims(scope)
+    } = Client.claims(scope, sub)
+  end
+
+  test "we include all necessary attributes in the JWT with sub" do
+    {:ok, email} = Goth.Config.get(:client_email)
+    iat = :os.system_time(:seconds)
+    exp = iat+10
+    scope = "prediction"
+    sub = "test@example.com"
+
+    assert %{
+      "iss"   => ^email,
+      "scope" => ^scope,
+      "aud"   => "https://www.googleapis.com/oauth2/v4/token",
+      "iat"   => ^iat,
+      "exp"   => ^exp,
+      "sub"   => ^sub
+    } = Client.claims(scope, sub)
   end
 
   test "the claims json generated is legit" do
-    json = Client.json("prediction")
+    json = Client.json("prediction", nil)
     assert {:ok, _obj} = Poison.decode(json)
   end
 
-  test "we call the API with the correct data and generate a token", %{bypass: bypass} do
+  test "the claims json generated is legit with sub" do
+    json = Client.json("prediction", "test@example.com")
+    assert {:ok, _obj} = Poison.decode(json)
+  end
+
+  test "we call the API with the correct data and generate a token without sub", %{bypass: bypass} do
     token_response = %{
       "access_token" => "1/8xbJqaOZXSUZbHLl5EOtu1pxz3fmmetKx9W8CV4t79M",
       "token_type"   => "Bearer",
@@ -39,17 +62,18 @@ defmodule Goth.ClientTest do
     }
 
     scope = "prediction"
+    sub = nil
 
     Bypass.expect bypass, fn conn ->
       assert "/oauth2/v4/token" == conn.request_path
       assert "POST"             == conn.method
 
-      assert_body_is_legit_jwt(conn, scope)
+      assert_body_is_legit_jwt(conn, scope, sub)
 
       Plug.Conn.resp(conn, 201, Poison.encode!(token_response))
     end
 
-    {:ok, data} = Client.get_access_token(scope)
+    {:ok, data} = Client.get_access_token(scope, sub)
 
     at = token_response["access_token"]
     tt = token_response["token_type"]
@@ -57,14 +81,41 @@ defmodule Goth.ClientTest do
     assert %Token{token: ^at, type: ^tt, expires: _exp} = data
   end
 
-  defp assert_body_is_legit_jwt(conn, scope) do
+  test "we call the API with the correct data and generate a token with sub", %{bypass: bypass} do
+    token_response = %{
+      "access_token" => "1/8xbJqaOZXSUZbHLl5EOtu1pxz3fmmetKx9W8CV4t79M",
+      "token_type"   => "Bearer",
+      "expires_in"   => 3600
+    }
+
+    scope = "prediction"
+    sub = "test@example.com"
+
+    Bypass.expect bypass, fn conn ->
+      assert "/oauth2/v4/token" == conn.request_path
+      assert "POST"             == conn.method
+
+      assert_body_is_legit_jwt(conn, scope, sub)
+
+      Plug.Conn.resp(conn, 201, Poison.encode!(token_response))
+    end
+
+    {:ok, data} = Client.get_access_token(scope, sub)
+
+    at = token_response["access_token"]
+    tt = token_response["token_type"]
+
+    assert %Token{token: ^at, type: ^tt, expires: _exp} = data
+  end
+
+  defp assert_body_is_legit_jwt(conn, scope, sub) do
     {:ok, body, _conn} = Plug.Conn.read_body(conn)
     assert String.length(body) > 0
 
     [_header, claims, _sign] = String.split(body, ".")
     claims = claims |> JsonWebToken.Format.Base64Url.decode |> Poison.decode!
 
-    generated = Client.claims(scope, claims["iat"])
+    generated = Client.claims(scope, sub, claims["iat"])
 
     assert ^generated = claims
   end
@@ -94,7 +145,7 @@ defmodule Goth.ClientTest do
       end
     end)
 
-    {:ok, data} = Client.get_access_token(:metadata, Enum.join(scopes, " "))
+    {:ok, data} = Client.get_access_token(:metadata, Enum.join(scopes, " "), nil)
 
     at = token_response["access_token"]
     tt = token_response["token_type"]

@@ -18,14 +18,14 @@ defmodule Goth.Client do
   retrieve a new token.
   """
 
-  def get_access_token(scope) do
+  def get_access_token(scope, sub) do
     {:ok, token_source} = Config.get(:token_source)
-    get_access_token(token_source, scope)
+    get_access_token(token_source, scope, sub)
   end
 
   # Fetch an access token from Google's metadata service for applications running
   # on Google's Cloud platform.
-  def get_access_token(:metadata, scope) do
+  def get_access_token(:metadata, scope, sub) do
     headers  = [{"Metadata-Flavor", "Google"}]
     account  = Application.get_env(:goth, :metadata_account, "default")
     metadata = Application.get_env(:goth, :metadata_url,
@@ -36,26 +36,26 @@ defmodule Goth.Client do
     if check_metadata_scope(url_base, scope) do
       url      = "#{url_base}/token"
       {:ok, token} = HTTPoison.get(url, headers)
-      {:ok, Token.from_response_json(scope, token.body)}
+      {:ok, Token.from_response_json(scope, sub, token.body)}
     else
       {:error, :scope_denied}
     end
   end
 
   # Fetch an access token from Google's OAuth service using a JWT
-  def get_access_token(:oauth, scope) do
+  def get_access_token(:oauth, scope, sub) do
     endpoint = Application.get_env(:goth, :endpoint, "https://www.googleapis.com")
     url      = "#{endpoint}/oauth2/v4/token"
     body     = {:form, [grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                        assertion:  jwt(scope)]}
+                        assertion:  jwt(scope, sub)]}
     headers  = [{"Content-Type", "application/x-www-form-urlencoded"}]
 
     {:ok, response} = HTTPoison.post(url, body, headers)
-    {:ok, Token.from_response_json(scope, response.body)}
+    {:ok, Token.from_response_json(scope, sub, response.body)}
   end
 
-  def claims(scope), do: claims(scope, :os.system_time(:seconds))
-  def claims(scope, iat) do
+  def claims(scope, sub), do: claims(scope, sub, :os.system_time(:seconds))
+  def claims(scope, sub, iat) do
     {:ok, email} = Config.get(:client_email)
     %{
       "iss"   => email,
@@ -64,20 +64,24 @@ defmodule Goth.Client do
       "iat"   => iat,
       "exp"   => iat+10
     }
+    |> add_sub(sub)
   end
 
-  def json(scope), do: json(scope, :os.system_time(:seconds))
-  def json(scope, iat) do
+  def add_sub(claims, nil), do: claims
+  def add_sub(claims, sub), do: claims |> Map.put("sub", sub)
+
+  def json(scope, sub), do: json(scope, sub, :os.system_time(:seconds))
+  def json(scope, sub, iat) do
     scope
-    |> claims(iat)
+    |> claims(sub, iat)
     |> Poison.encode!
   end
 
-  def jwt(scope), do: jwt(scope, :os.system_time(:seconds))
-  def jwt(scope, iat) do
+  def jwt(scope, sub), do: jwt(scope, sub, :os.system_time(:seconds))
+  def jwt(scope, sub, iat) do
     {:ok, key} = Config.get(:private_key)
     scope
-    |> claims(iat)
+    |> claims(sub, iat)
     |> JsonWebToken.sign(%{alg: "RS256", key: JsonWebToken.Algorithm.RsaUtil.private_key(key)})
   end
 
